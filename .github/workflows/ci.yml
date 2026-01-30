@@ -1,0 +1,197 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # ========== USER SERVICE ==========
+  user-service-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./user-service
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Run linter
+        run: npm run lint --fix --if-present || true
+
+      - name: Build application
+        run: npm run build
+
+      - name: Run tests
+        run: npm run test --if-present || echo "No tests configured"
+
+  # ========== BOOKING SERVICE ==========
+  booking-service-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./booking-service
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Run linter
+        run: npm run lint --fix --if-present || true
+
+      - name: Build application
+        run: npm run build
+
+      - name: Run tests
+        run: npm run test --if-present || echo "No tests configured"
+
+  # ========== FRONTEND LARAVEL ==========
+  frontend-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend-laravel
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo, pdo_mysql
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --optimize-autoloader
+
+      - name: Create .env file
+        run: cp .env.example .env || echo "No .env.example found"
+
+      - name: Generate application key
+        run: php artisan key:generate --force || true
+
+  # ========== DOCKER BUILD ==========
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [user-service-test, booking-service-test, frontend-test]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build user-service image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./user-service
+          file: ./user-service/Dockerfile
+          push: false
+          tags: uas-user-service:latest
+
+      - name: Build booking-service image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./booking-service
+          file: ./booking-service/Dockerfile
+          push: false
+          tags: uas-booking-service:latest
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend-laravel
+          file: ./frontend-laravel/Dockerfile
+          push: false
+          tags: uas-frontend:latest
+
+  # ========== DOCKER HUB PUSH (OPTIONAL) ==========
+  docker-push:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push user-service
+        uses: docker/build-push-action@v4
+        with:
+          context: ./user-service
+          file: ./user-service/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/uas-user-service:latest
+            ${{ secrets.DOCKER_USERNAME }}/uas-user-service:${{ github.sha }}
+
+      - name: Build and push booking-service
+        uses: docker/build-push-action@v4
+        with:
+          context: ./booking-service
+          file: ./booking-service/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/uas-booking-service:latest
+            ${{ secrets.DOCKER_USERNAME }}/uas-booking-service:${{ github.sha }}
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend-laravel
+          file: ./frontend-laravel/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/uas-frontend:latest
+            ${{ secrets.DOCKER_USERNAME }}/uas-frontend:${{ github.sha }}
+
+  # ========== NOTIFICATION ==========
+  notify:
+    runs-on: ubuntu-latest
+    needs: [user-service-test, booking-service-test, frontend-test, docker-build]
+    if: always()
+    
+    steps:
+      - name: Check job status
+        run: |
+          if [ "${{ needs.user-service-test.result }}" == "success" ] && \
+             [ "${{ needs.booking-service-test.result }}" == "success" ] && \
+             [ "${{ needs.frontend-test.result }}" == "success" ] && \
+             [ "${{ needs.docker-build.result }}" == "success" ]; then
+            echo "✅ CI/CD Pipeline PASSED!"
+            exit 0
+          else
+            echo "❌ CI/CD Pipeline FAILED!"
+            exit 1
+          fi

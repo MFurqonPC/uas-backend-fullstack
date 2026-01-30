@@ -1,0 +1,128 @@
+version: '3.8'
+
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: uas-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: user_service
+      MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - uas-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # RabbitMQ Message Broker
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: uas-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - uas-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # User Service (NestJS)
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: uas-user-service
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USERNAME: root
+      DB_PASSWORD: root
+      DB_DATABASE: user_service
+      PORT: 3001
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    ports:
+      - "3001:3001"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - uas-network
+    restart: unless-stopped
+
+  # Booking Service (NestJS)
+  booking-service:
+    build:
+      context: ./booking-service
+      dockerfile: Dockerfile
+    container_name: uas-booking-service
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USERNAME: root
+      DB_PASSWORD: root
+      DB_DATABASE: booking_service
+      PORT: 3002
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    ports:
+      - "3002:3002"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - uas-network
+    restart: unless-stopped
+
+  # Laravel Frontend
+  frontend:
+    build:
+      context: ./frontend-laravel
+      dockerfile: Dockerfile
+    container_name: uas-frontend
+    ports:
+      - "8000:8000"
+    environment:
+      APP_NAME: "Sistem Booking Ruangan"
+      APP_ENV: production
+      APP_DEBUG: 'false'
+      APP_URL: http://localhost:8000
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: booking_system
+      DB_USERNAME: root
+      DB_PASSWORD: root
+      USER_SERVICE_URL: http://user-service:3001
+      BOOKING_SERVICE_URL: http://booking-service:3002
+    depends_on:
+      - mysql
+      - user-service
+      - booking-service
+    networks:
+      - uas-network
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  rabbitmq_data:
+
+networks:
+  uas-network:
+    driver: bridge
